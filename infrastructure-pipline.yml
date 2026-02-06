@@ -17,8 +17,8 @@ parameters:
 variables:
   TF_DIR: '.' 
   TF_VAR_FILE: '${{ parameters.env }}.tfvars'
-  AWS_SERVICE_CONNECTION: 'bahi-aws'
-  AWS_REGION: 'us-east-1'
+  AWS_SERVICE_CONNECTION: '3body-pipline'
+  AWS_REGION: 'ap-southeast-2'
 
 pool:
   vmImage: ubuntu-latest
