@@ -1,0 +1,43 @@
+name: $(Date:yyyyMMdd)$(Rev:.r)-Release
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      - '*.tf'
+      - '*.yml'
+      - '*.md'
+
+pr: none
+
+variables:
+  AWS_SERVICE_CONNECTION: '3body-pipline'
+  AWS_REGION: '3body-pipline'
+  IMAGE_REPOSITORY: 'abdelrhmanahmed1/graduation-project'
+  # OPTIMIZATION: Set this variable in Azure DevOps Library to avoid running Terraform to find it.
+  # CLUSTER_NAME: 'realfinal-eks' 
+
+pool:
+  vmImage: ubuntu-latest
+
+jobs:
+- job: Release
+  displayName: 'Build and Release Docker Image'
+  steps:
+  - checkout: self
+
+  # 1. Build and Push (Does not need Cluster Access)
+  - task: Docker@2
+    displayName: Build and Push Docker Image
+    inputs:
+      containerRegistry: 'docker'
+      repository: abdelrhmanahmed1/graduation-project
+      command: 'buildAndPush'
+      Dockerfile: '**/Dockerfile'
+      tags: |
+        $(Build.BuildId)
+        latest
+
+  # 2. Deploy via Kubectl (Optional - only if you want to force update without ArgoCD)
+  # Keeping this simple: Release just builds. ArgoCD Pipeline handles the rest.

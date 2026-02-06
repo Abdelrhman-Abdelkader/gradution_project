@@ -1,0 +1,66 @@
+name: $(Date:yyyyMMdd)$(Rev:.r)-ArgoCD
+trigger: none
+pr: none
+
+variables:
+  AWS_SERVICE_CONNECTION: '3body-pipline'
+  AWS_REGION: ' ap-southeast-2'
+  # OPTIMIZATION: We assume CLUSTER_NAME is provided as a pipeline variable
+  CLUSTER_NAME: 'eks-platform-prod-v2-cluster'
+
+pool:
+  vmImage: ubuntu-latest
+
+jobs:
+- job: ArgoSync
+  displayName: 'ArgoCD Sync / Rollout'
+  steps:
+  - checkout: self
+
+  # 1. Configure Kubeconfig directly using the Variable (No Terraform needed)
+  - task: AWSShellScript@1
+    displayName: Configure kubeconfig
+    inputs:
+      awsCredentials: $(AWS_SERVICE_CONNECTION)
+      regionName: $(AWS_REGION)
+      scriptType: inline
+      inlineScript: |
+        set -euo pipefail
+        
+        if [ -z "$(CLUSTER_NAME)" ]; then
+          echo "Error: CLUSTER_NAME variable is not set."
+          echo "Please set 'CLUSTER_NAME' in your Pipeline Variables (e.g. realfinal-eks)."
+          exit 1
+        fi
+
+        echo "Checking if cluster $(CLUSTER_NAME) exists..."
+        if ! aws eks describe-cluster --name "$(CLUSTER_NAME)" --region "$(AWS_REGION)" >/dev/null 2>&1; then
+           echo "##[warning]Cluster $(CLUSTER_NAME) not found. Skipping kubeconfig setup."
+           echo "##vso[task.setvariable variable=CLUSTER_EXISTS]false"
+           exit 0
+        fi
+
+        echo "Connecting to cluster: $(CLUSTER_NAME)..."
+        aws eks update-kubeconfig --name "$(CLUSTER_NAME)" --region "$(AWS_REGION)"
+        echo "##vso[task.setvariable variable=CLUSTER_EXISTS]true"
+
+  # 2. Trigger Rollout Restart
+  - task: AWSShellScript@1
+    displayName: Restart Deployment (Pull New Image)
+    inputs:
+      awsCredentials: $(AWS_SERVICE_CONNECTION)
+      regionName: $(AWS_REGION)
+      scriptType: inline
+      inlineScript: |
+        set -euo pipefail
+        
+        if [ "$(CLUSTER_EXISTS)" == "false" ]; then
+           echo "Cluster does not exist. Skipping deployment restart."
+           exit 0
+        fi
+        
+        echo "Forcing restart of application deployment..."
+        kubectl rollout restart deployment/realfinal-app -n default
+        
+        echo "Checking rollout status..."
+        kubectl rollout status deployment/realfinal-app -n default
