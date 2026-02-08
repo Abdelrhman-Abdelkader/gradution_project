@@ -1,3 +1,54 @@
+name: $(Date:yyyyMMdd)$(Rev:.r)-Infrastructure
+trigger: none
+pr: none
+
+parameters:
+- name: env
+  displayName: Environment
+  type: string
+  default: nonprod
+  values:
+  - nonprod
+  - prod
+
+- name: destroy
+  displayName: Destroy
+  type: boolean
+  default: false
+
+variables:
+  TF_DIR: .
+  TF_VAR_FILE: ${{ parameters.env }}.tfvars
+  AWS_SERVICE_CONNECTION: 3body-pipline
+  AWS_REGION: ap-southeast-2
+
+pool:
+  vmImage: ubuntu-latest
+
+jobs:
+- job: Infrastructure
+  displayName: Infrastructure Provisioning
+  timeoutInMinutes: 120
+
+  steps:
+  - checkout: self
+
+  - task: TerraformInstaller@1
+    displayName: Install Terraform
+    inputs:
+      terraformVersion: latest
+
+  - task: AWSShellScript@1
+    displayName: Terraform Init
+    inputs:
+      awsCredentials: $(AWS_SERVICE_CONNECTION)
+      regionName: $(AWS_REGION)
+      scriptType: inline
+      inlineScript: |
+        set -euo pipefail
+        cd "$TF_DIR"
+        terraform init
+
   - task: AWSShellScript@1
     displayName: Terraform Apply or Destroy
     inputs:
@@ -11,40 +62,29 @@
         terraform validate
 
         if [ "${{ parameters.destroy }}" = "true" ]; then
-          echo "Running Pre-Destroy Cleanup (AWS CLI Method)..."
+          echo "=== DESTROY MODE ENABLED ==="
 
           VPC_ID="$(terraform output -raw vpc_id 2>/dev/null || true)"
-          if [ -z "$VPC_ID" ]; then
-            echo "No vpc_id output found; skipping AWS cleanup."
-          else
+          if [ -n "$VPC_ID" ]; then
             echo "Target VPC ID: $VPC_ID"
 
-            echo "Checking for Classic ELBs..."
-            ELB_NAMES=$(aws elb describe-load-balancers --query "LoadBalancerDescriptions[?VPCId=='$VPC_ID'].LoadBalancerName" --output text || true)
-            if [ -n "${ELB_NAMES:-}" ]; then
-              for elb in $ELB_NAMES; do
-                echo "Deleting Classic ELB: $elb"
-                aws elb delete-load-balancer --load-balancer-name "$elb" || true
-              done
-            else
-              echo "No Classic ELBs found."
-            fi
+            echo "Checking for ALB/NLB..."
+            ELB_ARNS=$(aws elbv2 describe-load-balancers \
+              --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" \
+              --output text || true)
 
-            echo "Checking for V2 Load Balancers (ALB/NLB)..."
-            ELB_ARNS=$(aws elbv2 describe-load-balancers --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" --output text || true)
-            if [ -n "${ELB_ARNS:-}" ]; then
+            if [ -n "$ELB_ARNS" ]; then
               for arn in $ELB_ARNS; do
-                echo "Deleting ELBv2: $arn"
+                echo "Deleting Load Balancer: $arn"
                 aws elbv2 delete-load-balancer --load-balancer-arn "$arn" || true
               done
-              echo "Waiting for ELBv2 deletion..."
-              sleep 20
+              echo "Waiting for load balancers cleanup..."
+              sleep 30
             else
-              echo "No V2 Load Balancers found."
+              echo "No load balancers found."
             fi
-
-            echo "Waiting 30 seconds for AWS cleanup..."
-            sleep 30
+          else
+            echo "No vpc_id output found, skipping AWS cleanup."
           fi
 
           echo "Running Terraform Destroy..."
@@ -52,7 +92,7 @@
           exit 0
         fi
 
-        echo "Running Terraform Apply..."
+        echo "=== APPLY MODE ==="
         terraform apply -auto-approve -var-file="$(TF_VAR_FILE)"
 
 
