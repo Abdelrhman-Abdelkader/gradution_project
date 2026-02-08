@@ -1,6 +1,6 @@
 variable "aws_region" {
   description = "The AWS Region to deploy the cluster into"
-  default     = " ap-southeast-2"
+  default     = "ap-southeast-2"
 }
 
 variable "project_name" {

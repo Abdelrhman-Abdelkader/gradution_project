@@ -39,16 +39,40 @@ resource "aws_apigatewayv2_authorizer" "jwt" {
   }
 }
 
+# resource "aws_apigatewayv2_integration" "nlb_proxy" {
+#   api_id           = aws_apigatewayv2_api.main.id
+#   integration_type = "HTTP_PROXY"
+  
+#   # This variable is updated by the pipeline (sed) after Helm creates the LB
+#   integration_uri  = var.nlb_dns_name 
+  
+#   integration_method = "ANY"
+#   connection_type    = "INTERNET"
+# }
+
 resource "aws_apigatewayv2_integration" "nlb_proxy" {
   api_id           = aws_apigatewayv2_api.main.id
   integration_type = "HTTP_PROXY"
-  
-  # This variable is updated by the pipeline (sed) after Helm creates the LB
-  integration_uri  = var.nlb_dns_name 
-  
   integration_method = "ANY"
-  connection_type    = "INTERNET"
+
+  connection_type = "VPC_LINK"
+  connection_id   = aws_apigatewayv2_vpc_link.main.id
+
+  integration_uri = aws_lb_listener.nlb_http.arn
 }
+
+
+resource "aws_lb_listener" "nlb_http" {
+  load_balancer_arn = aws_lb.nlb.arn
+  port              = 80
+  protocol          = "TCP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.ingress.arn
+  }
+}
+
 
 resource "aws_apigatewayv2_route" "default" {
   api_id    = aws_apigatewayv2_api.main.id
