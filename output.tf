@@ -1,7 +1,11 @@
-
 output "vpc_id" {
   description = "VPC ID"
   value       = aws_vpc.main.id
+}
+
+output "private_subnet_ids" {
+  description = "Private subnet IDs"
+  value       = aws_subnet.private[*].id
 }
 
 output "cluster_name" {
@@ -12,6 +16,11 @@ output "cluster_name" {
 output "cluster_endpoint" {
   description = "Endpoint for EKS control plane"
   value       = aws_eks_cluster.main.endpoint
+}
+
+output "cluster_ca" {
+  description = "Base64-encoded CA data for the EKS cluster"
+  value       = aws_eks_cluster.main.certificate_authority[0].data
 }
 
 output "api_gateway_url" {
@@ -28,9 +37,3 @@ output "cognito_client_id" {
   description = "Cognito App Client ID"
   value       = aws_cognito_user_pool_client.client.id
 }
-
-output "cluster_name" { value = aws_eks_cluster.main.name }
-output "cluster_endpoint" { value = aws_eks_cluster.main.endpoint }
-output "cluster_ca" { value = aws_eks_cluster.main.certificate_authority[0].data }
-output "private_subnet_ids" { value = aws_subnet.private[*].id }
-output "vpc_id" { value = aws_vpc.main.id }
