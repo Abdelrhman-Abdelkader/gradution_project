@@ -1,51 +1,3 @@
-name: $(Date:yyyyMMdd)$(Rev:.r)-Infrastructure
-trigger: none
-pr: none
-
-parameters:
-  - name: env
-    displayName: Environment
-    type: string
-    default: nonprod
-    values: [nonprod, prod]
-
-  - name: destroy
-    displayName: Destroy
-    type: boolean
-    default: false
-
-variables:
-  TF_DIR: '.' 
-  TF_VAR_FILE: '${{ parameters.env }}.tfvars'
-  AWS_SERVICE_CONNECTION: '3body-pipline'
-  AWS_REGION: 'ap-southeast-2'
-
-pool:
-  vmImage: ubuntu-latest
-
-jobs:
-- job: Infrastructure
-  displayName: 'Infrastructure Provisioning (VPC, EKS, Cognito, APIGW)'
-  timeoutInMinutes: 120
-  steps:
-  - checkout: self
-
-  - task: TerraformInstaller@1
-    displayName: Install Terraform
-    inputs:
-      terraformVersion: latest
-
-  - task: AWSShellScript@1
-    displayName: Terraform Init
-    inputs:
-      awsCredentials: $(AWS_SERVICE_CONNECTION)
-      regionName: $(AWS_REGION)
-      scriptType: inline
-      inlineScript: |
-        set -euo pipefail
-        cd "$(TF_DIR)"
-        terraform init
-
   - task: AWSShellScript@1
     displayName: Terraform Apply or Destroy
     inputs:
@@ -54,59 +6,165 @@ jobs:
       scriptType: inline
       inlineScript: |
         set -euo pipefail
-        cd "$(TF_DIR)"
-        
-        # ATTEMPT FORCE UNLOCK (Safeguard)
-        echo "Attempting to force unlock state..."
-        terraform force-unlock -force 41887957-f2da-c5b7-7b04-a1e1dd1c79c9 || echo "Unlock failed or not needed"
+        cd "$TF_DIR"
 
-        if [ "${{ parameters.destroy }}" = "True" ]; then
+        terraform validate
+
+        if [ "${{ parameters.destroy }}" = "true" ]; then
           echo "Running Pre-Destroy Cleanup (AWS CLI Method)..."
-          
-          # 1. Get VPC ID from Terraform (Critical for filtering)
-          VPC_ID="$(terraform output -raw vpc_id)"
-          echo "Target VPC ID: $VPC_ID"
-          
-          # 2. Delete Classic ELBs in VPC
-          echo "Checking for Classic ELBs..."
-          ELB_NAMES=$(aws elb describe-load-balancers --query "LoadBalancerDescriptions[?VPCId=='$VPC_ID'].LoadBalancerName" --output text)
-          if [ -n "$ELB_NAMES" ]; then
-            for elb in $ELB_NAMES; do
-              echo "Deleting Classic ELB: $elb"
-              aws elb delete-load-balancer --load-balancer-name "$elb"
-            done
-          else
-            echo "No Classic ELBs found."
-          fi
 
-          # 3. Delete ELBv2 (ALB/NLB) in VPC
-          echo "Checking for V2 Load Balancers (ALB/NLB)..."
-          ELB_ARNS=$(aws elbv2 describe-load-balancers --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" --output text)
-          if [ -n "$ELB_ARNS" ]; then
-            for arn in $ELB_ARNS; do
-              echo "Deleting ELBv2: $arn"
-              aws elbv2 delete-load-balancer --load-balancer-arn "$arn"
-            done
-            
-            # Wait for them to disappear to free up ENIs
-            echo "Waiting for ELBv2 deletion..."
-            sleep 15
+          VPC_ID="$(terraform output -raw vpc_id 2>/dev/null || true)"
+          if [ -z "$VPC_ID" ]; then
+            echo "No vpc_id output found; skipping AWS cleanup."
           else
-            echo "No V2 Load Balancers found."
+            echo "Target VPC ID: $VPC_ID"
+
+            echo "Checking for Classic ELBs..."
+            ELB_NAMES=$(aws elb describe-load-balancers --query "LoadBalancerDescriptions[?VPCId=='$VPC_ID'].LoadBalancerName" --output text || true)
+            if [ -n "${ELB_NAMES:-}" ]; then
+              for elb in $ELB_NAMES; do
+                echo "Deleting Classic ELB: $elb"
+                aws elb delete-load-balancer --load-balancer-name "$elb" || true
+              done
+            else
+              echo "No Classic ELBs found."
+            fi
+
+            echo "Checking for V2 Load Balancers (ALB/NLB)..."
+            ELB_ARNS=$(aws elbv2 describe-load-balancers --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" --output text || true)
+            if [ -n "${ELB_ARNS:-}" ]; then
+              for arn in $ELB_ARNS; do
+                echo "Deleting ELBv2: $arn"
+                aws elbv2 delete-load-balancer --load-balancer-arn "$arn" || true
+              done
+              echo "Waiting for ELBv2 deletion..."
+              sleep 20
+            else
+              echo "No V2 Load Balancers found."
+            fi
+
+            echo "Waiting 30 seconds for AWS cleanup..."
+            sleep 30
           fi
-          
-          # 4. Cleanup Target Groups (orphaned TGs can prevent deletions)
-          # Note: TGs are not strictly VPC-bound in query but we can try to clean specific ones or just wait if time permits.
-          # For now, ELB deletion is the main blocker for IGW.
-          
-          echo "Waiting 30 seconds for AWS cleanup..."
-          sleep 30
 
           echo "Running Terraform Destroy..."
-          terraform destroy -auto-approve -var-file="$(TF_VAR_FILE)" -lock=false
+          terraform destroy -auto-approve -var-file="$(TF_VAR_FILE)"
           exit 0
         fi
 
-
-        echo "Running Terraform Apply (Pass 1)..."
+        echo "Running Terraform Apply..."
         terraform apply -auto-approve -var-file="$(TF_VAR_FILE)"
+
+
+# name: $(Date:yyyyMMdd)$(Rev:.r)-Infrastructure
+# trigger: none
+# pr: none
+
+# parameters:
+#   - name: env
+#     displayName: Environment
+#     type: string
+#     default: nonprod
+#     values: [nonprod, prod]
+
+#   - name: destroy
+#     displayName: Destroy
+#     type: boolean
+#     default: false
+
+# variables:
+#   TF_DIR: '.' 
+#   TF_VAR_FILE: '${{ parameters.env }}.tfvars'
+#   AWS_SERVICE_CONNECTION: '3body-pipline'
+#   AWS_REGION: 'ap-southeast-2'
+
+# pool:
+#   vmImage: ubuntu-latest
+
+# jobs:
+# - job: Infrastructure
+#   displayName: 'Infrastructure Provisioning (VPC, EKS, Cognito, APIGW)'
+#   timeoutInMinutes: 120
+#   steps:
+#   - checkout: self
+
+#   - task: TerraformInstaller@1
+#     displayName: Install Terraform
+#     inputs:
+#       terraformVersion: latest
+
+#   - task: AWSShellScript@1
+#     displayName: Terraform Init
+#     inputs:
+#       awsCredentials: $(AWS_SERVICE_CONNECTION)
+#       regionName: $(AWS_REGION)
+#       scriptType: inline
+#       inlineScript: |
+#         set -euo pipefail
+#         cd "$(TF_DIR)"
+#         terraform init
+
+#   - task: AWSShellScript@1
+#     displayName: Terraform Apply or Destroy
+#     inputs:
+#       awsCredentials: $(AWS_SERVICE_CONNECTION)
+#       regionName: $(AWS_REGION)
+#       scriptType: inline
+#       inlineScript: |
+#         set -euo pipefail
+#         cd "$(TF_DIR)"
+        
+#         # ATTEMPT FORCE UNLOCK (Safeguard)
+#         echo "Attempting to force unlock state..."
+#         terraform force-unlock -force 41887957-f2da-c5b7-7b04-a1e1dd1c79c9 || echo "Unlock failed or not needed"
+
+#         if [ "${{ parameters.destroy }}" = "True" ]; then
+#           echo "Running Pre-Destroy Cleanup (AWS CLI Method)..."
+          
+#           # 1. Get VPC ID from Terraform (Critical for filtering)
+#           VPC_ID="$(terraform output -raw vpc_id)"
+#           echo "Target VPC ID: $VPC_ID"
+          
+#           # 2. Delete Classic ELBs in VPC
+#           echo "Checking for Classic ELBs..."
+#           ELB_NAMES=$(aws elb describe-load-balancers --query "LoadBalancerDescriptions[?VPCId=='$VPC_ID'].LoadBalancerName" --output text)
+#           if [ -n "$ELB_NAMES" ]; then
+#             for elb in $ELB_NAMES; do
+#               echo "Deleting Classic ELB: $elb"
+#               aws elb delete-load-balancer --load-balancer-name "$elb"
+#             done
+#           else
+#             echo "No Classic ELBs found."
+#           fi
+
+#           # 3. Delete ELBv2 (ALB/NLB) in VPC
+#           echo "Checking for V2 Load Balancers (ALB/NLB)..."
+#           ELB_ARNS=$(aws elbv2 describe-load-balancers --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" --output text)
+#           if [ -n "$ELB_ARNS" ]; then
+#             for arn in $ELB_ARNS; do
+#               echo "Deleting ELBv2: $arn"
+#               aws elbv2 delete-load-balancer --load-balancer-arn "$arn"
+#             done
+            
+#             # Wait for them to disappear to free up ENIs
+#             echo "Waiting for ELBv2 deletion..."
+#             sleep 15
+#           else
+#             echo "No V2 Load Balancers found."
+#           fi
+          
+#           # 4. Cleanup Target Groups (orphaned TGs can prevent deletions)
+#           # Note: TGs are not strictly VPC-bound in query but we can try to clean specific ones or just wait if time permits.
+#           # For now, ELB deletion is the main blocker for IGW.
+          
+#           echo "Waiting 30 seconds for AWS cleanup..."
+#           sleep 30
+
+#           echo "Running Terraform Destroy..."
+#           terraform destroy -auto-approve -var-file="$(TF_VAR_FILE)" -lock=false
+#           exit 0
+#         fi
+
+
+#         echo "Running Terraform Apply (Pass 1)..."
+#         terraform apply -auto-approve -var-file="$(TF_VAR_FILE)"
